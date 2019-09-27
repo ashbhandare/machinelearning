@@ -15,7 +15,7 @@ namespace Microsoft.ML.Samples
             {
                 var sample = type.GetMethod("Example", BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
 
-                if (sample != null)
+                if (sample != null && type.Name == "ResnetV2101TransferLearningFruits")
                 {
                     Console.WriteLine(type.Name);
                     sample.Invoke(null, null);
