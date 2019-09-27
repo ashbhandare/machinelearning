@@ -166,16 +166,23 @@ namespace Microsoft.ML.Transforms
             CheckTrainingParameters(options);
             var imageProcessor = new ImageProcessor(this);
             if (!options.ReuseTrainSetBottleneckCachedValues || !File.Exists(options.TrainSetBottleneckCachedValuesFilePath))
-                CacheFeaturizedImagesToDisk(input, options.LabelColumn, options.InputColumns[0], imageProcessor,
+            {
+                options.TrainCount = CacheFeaturizedImagesToDisk(input, options.LabelColumn, options.InputColumns[0], imageProcessor,
                     _inputTensorName, _bottleneckTensor.name, options.TrainSetBottleneckCachedValuesFilePath,
                     ImageClassificationMetrics.Dataset.Train, options.MetricsCallback);
+            }
+            else
+            {
+                options.TrainCount = File.ReadLines(options.TrainSetBottleneckCachedValuesFilePath).Count();
+            }
 
             if (options.ValidationSet != null &&
                     (!options.ReuseTrainSetBottleneckCachedValues || !File.Exists(options.ValidationSetBottleneckCachedValuesFilePath)))
-                CacheFeaturizedImagesToDisk(options.ValidationSet, options.LabelColumn, options.InputColumns[0],
+            {
+                long valCount = CacheFeaturizedImagesToDisk(options.ValidationSet, options.LabelColumn, options.InputColumns[0],
                     imageProcessor, _inputTensorName, _bottleneckTensor.name, options.ValidationSetBottleneckCachedValuesFilePath,
                     ImageClassificationMetrics.Dataset.Validation, options.MetricsCallback);
-
+            }
             TrainAndEvaluateClassificationLayer(options.TrainSetBottleneckCachedValuesFilePath, options, options.ValidationSetBottleneckCachedValuesFilePath);
         }
 
@@ -247,11 +254,12 @@ namespace Microsoft.ML.Transforms
             }
         }
 
-        private void CacheFeaturizedImagesToDisk(IDataView input, string labelColumnName, string imageColumnName,
+        private long CacheFeaturizedImagesToDisk(IDataView input, string labelColumnName, string imagepathColumnName,
             ImageProcessor imageProcessor, string inputTensorName, string outputTensorName, string cacheFilePath,
             ImageClassificationMetrics.Dataset dataset, ImageClassificationMetricsCallback metricsCallback)
         {
             var labelColumn = input.Schema[labelColumnName];
+            long imageCount = 0;
 
             if (labelColumn.Type.RawType != typeof(UInt32))
                 throw Host.ExceptSchemaMismatch(nameof(labelColumn), "Label",
@@ -291,8 +299,10 @@ namespace Microsoft.ML.Transforms
                     imageTensor.Dispose();
                     metrics.Bottleneck.Index++;
                     metricsCallback?.Invoke(metrics);
+                    imageCount += 1;
                 }
             }
+            return imageCount;
         }
 
         private IDataView GetShuffledData(string path)
@@ -382,6 +392,9 @@ namespace Microsoft.ML.Transforms
             metrics.Train = new TrainMetrics();
             float accuracy = 0;
             float crossentropy = 0;
+            var iterCount = 0;
+            Console.WriteLine("trainingSetCount " + trainingSet.GetRowCount());
+
             for (int epoch = 0; epoch < epochs; epoch += 1)
             {
                 batchIndex = 0;
@@ -413,7 +426,7 @@ namespace Microsoft.ML.Transforms
                             runner.AddInput(new Tensor(featureBatchPtr, featureTensorShape, TF_DataType.TF_FLOAT, featureBatchSizeInBytes), 0)
                                 .AddInput(new Tensor(labelBatchPtr, labelTensorShape, TF_DataType.TF_INT64, labelBatchSizeInBytes), 1)
                                 .Run();
-
+                            iterCount += 1;
                             metrics.Train.BatchProcessedCount += 1;
 
                             if (options.TestOnTrainSet && statisticsCallback != null)
@@ -431,8 +444,10 @@ namespace Microsoft.ML.Transforms
                                 outputTensors[0].Dispose();
                                 outputTensors[1].Dispose();
                             }
-
                             batchIndex = 0;
+                            var lr = Triangular(0.005f, 0.01f, iterCount, 2*options.TrainCount);
+                            Console.WriteLine("batch: " + iterCount + " lr: " + lr);
+                            options.LearningRate = lr;
                         }
                     }
 
@@ -471,6 +486,7 @@ namespace Microsoft.ML.Transforms
                         labelTensorShape[0] = batchSize;
                         labelBatchSizeInBytes = sizeof(long) * batchSize;
                     }
+                    Console.WriteLine("iterCount " + iterCount);
 
                     if (options.TestOnTrainSet && statisticsCallback != null)
                     {
@@ -573,6 +589,14 @@ namespace Microsoft.ML.Transforms
 
             trainSaver.save(_session, _checkpointPath);
             UpdateTransferLearningModelOnDisk(options, _classCount);
+        }
+
+        private float Triangular(float minLr, float maxLr, int currIter, long stepSize)
+        {
+            float cycle = (float)(Math.Floor((double)(1 + ((double)(currIter) / (2 * ((double)stepSize))))));
+            var x = Math.Abs(((float)currIter / (float)stepSize) - (2 * cycle) + 1);
+            var lr = minLr + (maxLr - minLr) * Math.Max(0, (1 - x));
+            return lr;
         }
 
         private (Session, Tensor, Tensor, Tensor) BuildEvaluationSession(ImageClassificationEstimator.Options options, int classCount)
@@ -1340,6 +1364,12 @@ namespace Microsoft.ML.Transforms
             public string LabelColumn;
 
             /// <summary>
+            /// The number of samples in training set.
+            /// </summary>
+            [Argument(ArgumentType.AtMostOnce, HelpText = "Number of training samples.", ShortName = "count", SortOrder = 4)]
+            public long TrainCount;
+
+            /// <summary>
             /// The name of the label in TensorFlow model.
             /// </summary>
             [Argument(ArgumentType.AtMostOnce, HelpText = "TensorFlow label node.", ShortName = "TFLabel", SortOrder = 5)]
@@ -1514,8 +1544,9 @@ namespace Microsoft.ML.Transforms
         public ImageClassificationTransformer Fit(IDataView input)
         {
             _host.CheckValue(input, nameof(input));
-            _transformer = new ImageClassificationTransformer(_host, _options, _dnnModel, input);
-
+            if (_transformer == null)
+                _transformer = new ImageClassificationTransformer(_host, _options, _dnnModel, input);
+                
             // Validate input schema.
             _transformer.GetOutputSchema(input.Schema);
             return _transformer;
