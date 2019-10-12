@@ -1544,8 +1544,9 @@ namespace Microsoft.ML.Transforms
         public ImageClassificationTransformer Fit(IDataView input)
         {
             _host.CheckValue(input, nameof(input));
-            _transformer = new ImageClassificationTransformer(_host, _options, _dnnModel, input);
-
+            if (_transformer == null)
+                _transformer = new ImageClassificationTransformer(_host, _options, _dnnModel, input);
+                
             // Validate input schema.
             _transformer.GetOutputSchema(input.Schema);
             return _transformer;
