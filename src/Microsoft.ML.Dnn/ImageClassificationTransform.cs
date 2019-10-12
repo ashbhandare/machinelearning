@@ -254,7 +254,7 @@ namespace Microsoft.ML.Transforms
             }
         }
 
-        private long CacheFeaturizedImagesToDisk(IDataView input, string labelColumnName, string imagepathColumnName,
+        private long CacheFeaturizedImagesToDisk(IDataView input, string labelColumnName, string imageColumnName,
             ImageProcessor imageProcessor, string inputTensorName, string outputTensorName, string cacheFilePath,
             ImageClassificationMetrics.Dataset dataset, ImageClassificationMetricsCallback metricsCallback)
         {
@@ -394,7 +394,7 @@ namespace Microsoft.ML.Transforms
             float crossentropy = 0;
             var iterCount = 0;
             Console.WriteLine("trainingSetCount " + trainingSet.GetRowCount());
-            
+
             for (int epoch = 0; epoch < epochs; epoch += 1)
             {
                 batchIndex = 0;
@@ -1544,9 +1544,8 @@ namespace Microsoft.ML.Transforms
         public ImageClassificationTransformer Fit(IDataView input)
         {
             _host.CheckValue(input, nameof(input));
-            if (_transformer == null)
-                _transformer = new ImageClassificationTransformer(_host, _options, _dnnModel, input);
-                
+            _transformer = new ImageClassificationTransformer(_host, _options, _dnnModel, input);
+
             // Validate input schema.
             _transformer.GetOutputSchema(input.Schema);
             return _transformer;
