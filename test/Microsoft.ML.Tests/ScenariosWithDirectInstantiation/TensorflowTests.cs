@@ -1754,6 +1754,108 @@ namespace Microsoft.ML.Scenarios
             Assert.InRange(lastEpoch, 1, 49);
         }
 
+        [TensorFlowFact]
+        public void TensorflowImageTypeTest()
+        {
+
+            string assetsRelativePath = @"assets";
+            string assetsPath = GetAbsolutePath(assetsRelativePath);
+            string imagesDownloadFolderPath = Path.Combine(assetsPath, "inputs",
+                "images");
+
+            //Download the image set and unzip
+            string finalImagesFolderName = DownloadImageSet(
+                imagesDownloadFolderPath);
+
+            string fullImagesetFolderPath = Path.Combine(
+                imagesDownloadFolderPath, finalImagesFolderName);
+
+            MLContext mlContext = new MLContext(seed: 1);
+
+            //Load all the original images info
+            IEnumerable<ImageData> images = LoadImagesFromDirectory(
+                folder: fullImagesetFolderPath, useFolderNameAsLabel: true);
+
+            IDataView shuffledFullImagesDataset = mlContext.Data.ShuffleRows(
+                mlContext.Data.LoadFromEnumerable(images), seed: 1);
+
+            shuffledFullImagesDataset = mlContext.Transforms.Conversion
+                .MapValueToKey("Label")
+                .Fit(shuffledFullImagesDataset)
+                .Transform(shuffledFullImagesDataset);
+
+            // Split the data 80:10 into train and test sets, train and evaluate.
+            TrainTestData trainTestData = mlContext.Data.TrainTestSplit(
+                shuffledFullImagesDataset, testFraction: 0.2, seed: 1);
+
+            IDataView trainDataset = trainTestData.TrainSet;
+            IDataView testDataset = trainTestData.TestSet;
+            var validationSet = mlContext.Transforms.LoadRawImageBytes("Image", fullImagesetFolderPath, "ImagePath")
+                    .Fit(testDataset)
+                    .Transform(testDataset);
+
+            var pipeline = mlContext.Transforms.LoadRawImageBytes("Image", fullImagesetFolderPath, "ImagePath")
+                .Append(mlContext.MulticlassClassification.Trainers.ImageClassification("Label", "Image", validationSet: validationSet)
+                .Append(mlContext.Transforms.Conversion.MapKeyToValue(outputColumnName: "PredictedLabel", inputColumnName: "PredictedLabel"))); ;
+
+            var trainedModel = pipeline.Fit(trainDataset);
+
+            mlContext.Model.Save(trainedModel, shuffledFullImagesDataset.Schema,
+                "model.zip");
+
+            ITransformer loadedModel;
+            DataViewSchema schema;
+            using (var file = File.OpenRead("model.zip"))
+                loadedModel = mlContext.Model.Load(file, out schema);
+
+            // Testing TrySinglePrediction: Utilizing PredictionEngine for single
+            // predictions. Here, two pre-selected images are utilized in testing
+            // the Prediction engine.
+            var predictionEngine = mlContext.Model
+                .CreatePredictionEngine<ImageData, ImagePrediction>(loadedModel);
+
+            IEnumerable<ImageData> testImages = LoadImagesFromDirectory(
+                fullImagesetFolderPath, true);
+
+            string[] directories = Directory.GetDirectories(fullImagesetFolderPath);
+            string[] labels = new string[directories.Length];
+            for (int j = 0; j < labels.Length; j++)
+            {
+                var dir = new DirectoryInfo(directories[j]);
+                labels[j] = dir.Name;
+            }
+
+            // Test daisy image
+            ImageData firstImageToPredict = new ImageData
+            {
+                ImagePath = Path.Combine(fullImagesetFolderPath, "daisy", "5794835_d15905c7c8_n.jpg")
+            };
+
+            // Test rose image
+            ImageData secondImageToPredict = new ImageData
+            {
+                ImagePath = Path.Combine(fullImagesetFolderPath, "roses", "12240303_80d87f77a3_n.jpg")
+            };
+
+            var predictionFirst = predictionEngine.Predict(firstImageToPredict);
+            var predictionSecond = predictionEngine.Predict(secondImageToPredict);
+
+            var labelColumnFirst = schema.GetColumnOrNull("Label").Value;
+            var labelTypeFirst = labelColumnFirst.Type;
+            var labelCountFirst = labelTypeFirst.GetKeyCount();
+            var labelColumnSecond = schema.GetColumnOrNull("Label").Value;
+            var labelTypeSecond = labelColumnSecond.Type;
+            var labelCountSecond = labelTypeSecond.GetKeyCount();
+
+            Assert.Equal((int)labelCountFirst, predictionFirst.Score.Length);
+            Assert.Equal((int)labelCountSecond, predictionSecond.Score.Length);
+            Assert.Equal("daisy", predictionFirst.PredictedLabel);
+            Assert.Equal("roses", predictionSecond.PredictedLabel);
+            Assert.True(Array.IndexOf(labels, predictionFirst.PredictedLabel) > -1);
+            Assert.True(Array.IndexOf(labels, predictionSecond.PredictedLabel) > -1);
+
+
+        }
         public static IEnumerable<ImageData> LoadImagesFromDirectory(string folder,
             bool useFolderNameAsLabel = true)
         {
