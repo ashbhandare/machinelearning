@@ -41,16 +41,46 @@ namespace Samples.Dynamic
             IDataView shuffledFullImagesDataset = mlContext.Data.ShuffleRows(
                 mlContext.Data.LoadFromEnumerable(images));
 
+            /*
+            var keyArray = new[]
+            {
+                new LookupMap { Key ="tulips" },
+                new LookupMap { Key ="daisy" },
+                new LookupMap { Key ="dandelion" },
+                new LookupMap { Key ="roses" },
+                new LookupMap { Key ="sunflowers" },
+            };
+            */
+
+            var keyArray = new LookupMap[5];
+            //IDataView keyData = mlContext.Data.LoadFromEnumerable(keyArray);
+            //IDataView keyData = null;
+
             // Apply transforms to the input dataset:
             // MapValueToKey : map 'string' type labels to keys
             // LoadImages : load raw images to "Image" column
             shuffledFullImagesDataset = mlContext.Transforms.Conversion
-                    .MapValueToKey("Label", keyOrdinality: Microsoft.ML.Transforms
-                    .ValueToKeyMappingEstimator.KeyOrdinality.ByValue)
-                .Append(mlContext.Transforms.LoadRawImageBytes("Image",
-                            fullImagesetFolderPath, "ImagePath"))
+                    .MapValueToKey("Label",inputColumnName: "Label")
                 .Fit(shuffledFullImagesDataset)
                 .Transform(shuffledFullImagesDataset);
+
+            var keyMetadata = default(VBuffer<ReadOnlyMemory<char>>);
+            shuffledFullImagesDataset.Schema.GetColumnOrNull("Label")?.Annotations.GetValue("KeyValues", ref keyMetadata);
+
+            IEnumerable<ReadOnlyMemory<char>> dV = keyMetadata.DenseValues();
+            int idx = 0;
+            foreach(var l in dV)
+            {
+                Console.WriteLine(l.ToString());
+                keyArray[idx].Key = l.ToString();
+            }
+            IDataView KV = mlContext.Data.LoadFromEnumerable(keyArray);
+
+            shuffledFullImagesDataset = mlContext.Transforms.LoadRawImageBytes("Image",
+                            fullImagesetFolderPath, "ImagePath")
+                .Fit(shuffledFullImagesDataset)
+                .Transform(shuffledFullImagesDataset);
+
 
             // Split the data 90:10 into train and test sets.
             TrainTestData trainTestData = mlContext.Data.TrainTestSplit(
@@ -360,6 +390,10 @@ namespace Samples.Dynamic
 
             [ColumnName("PredictedLabel")]
             public string PredictedLabel;
+        }
+        private class LookupMap
+        {
+            public string Key { get; set; }
         }
     }
 }

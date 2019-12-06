@@ -1,10 +1,14 @@
 ﻿
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Net;
+using System.Numerics;
+using System.Reflection;
+using System.Reflection.Emit;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.ML;
@@ -29,15 +33,30 @@ namespace Samples.Dynamic
             // paths.
             string finalImagesFolderName = DownloadImageSet(
                    imagesDownloadFolderPath);
-            string finalImagesFolderNameTrain = "cifar\\train";
+            string finalImagesFolderNameTrain = "cifar_small\\train";
             string fullImagesetFolderPathTrain = Path.Combine(
                 imagesDownloadFolderPath, finalImagesFolderNameTrain);
 
-            string finalImagesFolderNameTest = "cifar\\test";
+            string finalImagesFolderNameTest = "cifar_small\\test";
             string fullImagesetFolderPathTest = Path.Combine(
                 imagesDownloadFolderPath, finalImagesFolderNameTest);
 
             MLContext mlContext = new MLContext(seed: 1);
+
+            var keyArray2 = new[]
+            {
+                new LookupMap<string> { key = "dog" },
+                new LookupMap<string> { key = "frog" },
+                new LookupMap<string> { key = "horse" },
+                new LookupMap<string> { key = "ship" },
+                new LookupMap<string> { key = "truck"},
+                new LookupMap<string> { key = "airplane" },
+                new LookupMap<string> { key = "automobile" },
+                new LookupMap<string> { key = "bird" },
+                new LookupMap<string> { key = "cat" },
+                new LookupMap<string> { key = "deer" },
+            };
+            IDataView keyData = mlContext.Data.LoadFromEnumerable(keyArray2);
 
             //Load all the original train images info.
             IEnumerable<ImageData> train_images = LoadImagesFromDirectory(
@@ -50,12 +69,28 @@ namespace Samples.Dynamic
             // MapValueToKey : map 'string' type labels to keys
             // LoadImages : load raw images to "Image" column
             trainDataset = mlContext.Transforms.Conversion
-                    .MapValueToKey("Label", keyOrdinality:Microsoft.ML.Transforms
-                    .ValueToKeyMappingEstimator.KeyOrdinality.ByValue)
+                    .MapValueToKey("LabelK","Label" ,keyData: keyData)
                 .Append(mlContext.Transforms.LoadRawImageBytes("Image",
                             fullImagesetFolderPathTrain, "ImagePath"))
                 .Fit(trainDataset)
                 .Transform(trainDataset);
+
+            //// Get KV mapping from train set ////////////////////////////////////
+            //var keyArray = new LookupMap[trainDataset.Schema.GetColumnOrNull("Label")?.Annotations.];
+            //int numClasses = Directory.EnumerateDirectories(fullImagesetFolderPathTrain).Count();
+            //var t = default(ReadOnlyMemory<char>);
+            var kType = trainDataset.Schema.GetColumnOrNull("Label")?.Type;
+            
+            //var kType = trainDataset.Schema.GetColumnOrNull("LabelK")?.Annotations.Schema.GetColumnOrNull("KeyValues")?.Type.RawType;
+            //var kT = trainDataset.GetColumn<>("Label");
+            //IDataView KV = default(IDataView);
+            MethodInfo method = typeof(LearningRateSchedulingCifarResnetTransferLearning).GetMethod("getKVMapIDV");
+            MethodInfo generic = method.MakeGenericMethod(kType.RawType);
+
+            IDataView KV = (IDataView)generic.Invoke(null, new object[] { trainDataset, "LabelK"}) ;
+            //var KVD = (IDataView)Convert.ChangeType(KV, typeof(IDataView));
+            //KV = generic.Invoke(null, new[] {trainDataset});
+            ////////////////////////////////////////////////////////////////////////
 
             // Load all the original test images info and apply
             // the same transforms as above.
@@ -66,8 +101,7 @@ namespace Samples.Dynamic
                 LoadFromEnumerable(test_images);
 
             testDataset = mlContext.Transforms.Conversion
-                    .MapValueToKey("Label", keyOrdinality: Microsoft.ML.Transforms
-                    .ValueToKeyMappingEstimator.KeyOrdinality.ByValue)
+                    .MapValueToKey("LabelK",inputColumnName:"Label", keyData: KV)
                 .Append(mlContext.Transforms.LoadRawImageBytes("Image",
                             fullImagesetFolderPathTest, "ImagePath"))
                 .Fit(testDataset)
@@ -77,7 +111,7 @@ namespace Samples.Dynamic
             var options = new ImageClassificationTrainer.Options()
             {
                 FeatureColumnName = "Image",
-                LabelColumnName = "Label",
+                LabelColumnName = "LabelK",
                 // Just by changing/selecting InceptionV3/MobilenetV2 
                 // here instead of 
                 // ResnetV2101 you can try a different architecture/
@@ -182,7 +216,7 @@ namespace Samples.Dynamic
 
             // Evaluate the model on the test data and get the evaluation metrics.
             IDataView predictions = trainedModel.Transform(testDataset);
-            var metrics = mlContext.MulticlassClassification.Evaluate(predictions);
+            var metrics = mlContext.MulticlassClassification.Evaluate(predictions,"LabelK");
 
             Console.WriteLine($"Micro-accuracy: {metrics.MicroAccuracy}," +
                               $"macro-accuracy = {metrics.MacroAccuracy}");
@@ -270,13 +304,12 @@ namespace Samples.Dynamic
         {
             // get a set of images to teach the network about the new classes
             // CIFAR dataset ( 50000 train images and 10000 test images )
-            string fileName = "cifar10.zip";
+            string fileName = "cifar_small.zip";
             string url = $"https://tlcresources.blob.core.windows.net/" +
                 "datasets/cifar10.zip";
 
-            Download(url, imagesDownloadFolder, fileName);
-            UnZip(Path.Combine(imagesDownloadFolder, fileName),
-                imagesDownloadFolder);
+            //Download(url, imagesDownloadFolder, fileName);
+            //UnZip(Path.Combine(imagesDownloadFolder, fileName),imagesDownloadFolder);
 
             return Path.GetFileNameWithoutExtension(fileName);
         }
@@ -379,6 +412,36 @@ namespace Samples.Dynamic
 
             [ColumnName("PredictedLabel")]
             public string PredictedLabel;
+        }
+
+        private class LookupMap<T>
+        {
+            public T key;
+        }
+
+        public static IDataView getKVMapIDV<TValue>( IDataView dataView, string keyColName)
+        {
+            MLContext mlContext = new MLContext(seed: 1);
+            var keyMetadata = default(VBuffer<TValue>);
+            //var t = kType.Value.GetType();
+            var isKeyCol = dataView.Schema.GetColumnOrNull(keyColName)?.HasKeyValues();
+            if (isKeyCol.HasValue)
+                if(!isKeyCol.Value)
+                    throw new InvalidOperationException($"The given column '{keyColName}' is not of Key type and can't be used to infer the Key-Value Map.");
+
+            dataView.Schema.GetColumnOrNull(keyColName)?.GetKeyValues(ref keyMetadata);
+            //trainDataset.Schema.GetColumnOrNull("Label")?.GetKeyValues(ref keyMetadata);
+
+            //trainDataset.Schema.GetColumnOrNull("Label")?.Annotations.GetValue("KeyValues", ref keyMetadata);
+            var keyArray = new List<LookupMap<TValue>>();
+
+            var dV = keyMetadata.DenseValues();
+            foreach (var l in dV)
+            {
+                keyArray.Add(new LookupMap<TValue> { key = l });
+            }
+            return mlContext.Data.LoadFromEnumerable(keyArray);
+            //return KV;
         }
     }
 }
